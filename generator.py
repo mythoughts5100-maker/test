@@ -1,66 +1,79 @@
 from flask import Flask
 import os, psycopg2, random, threading, time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 app = Flask(__name__)
 
 # -------------------------
-# Database connection from environment variable
+# Database connection function (SAFE way)
 # -------------------------
 DB_URL = os.environ.get("DB_URL")
 if not DB_URL:
     raise ValueError("DB_URL environment variable is not set!")
 
-conn = psycopg2.connect(DB_URL)
-cursor = conn.cursor()
+def get_conn():
+    return psycopg2.connect(DB_URL)
 
 # -------------------------
-# Create sales table if not exists
+# Create table if not exists
 # -------------------------
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS sales (
-    id SERIAL PRIMARY KEY,
-    sale_date DATE,
-    product VARCHAR(50),
-    region VARCHAR(50),
-    sales_amount INT
-);
-""")
-conn.commit()
+with get_conn() as conn:
+    with conn.cursor() as cursor:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sales (
+            id SERIAL PRIMARY KEY,
+            sale_date DATE,
+            product VARCHAR(50),
+            region VARCHAR(50),
+            sales_amount INT
+        );
+        """)
 
 products = ["Laptop", "Phone", "Tablet"]
 regions = ["Baku", "Ganja", "Sumqayit"]
 
 # -------------------------
-# Function to insert sales
+# Background generator
 # -------------------------
 def add_sales_loop():
     while True:
-        today = datetime.now().date()
-        # Insert 5 random sales per day
-        for _ in range(5):
-            cursor.execute("""
-                INSERT INTO sales (sale_date, product, region, sales_amount)
-                VALUES (%s, %s, %s, %s)
-            """, (
-                today,
-                random.choice(products),
-                random.choice(regions),
-                random.randint(100, 1000)
-            ))
-            conn.commit()
-            print(f"Inserted sale for {today}")
-        # Delete old sales beyond 60 days
-        cursor.execute("DELETE FROM sales WHERE sale_date < NOW() - INTERVAL '60 days'")
-        conn.commit()
-        # Wait 24 hours
-        time.sleep(24*60*60)
+        try:
+            now = datetime.now()
 
-# Run generator in background thread
+            with get_conn() as conn:
+                with conn.cursor() as cursor:
+                    # Insert 1 row every minute
+                    cursor.execute("""
+                        INSERT INTO sales (sale_date, product, region, sales_amount)
+                        VALUES (%s, %s, %s, %s)
+                    """, (
+                        now.date(),
+                        random.choice(products),
+                        random.choice(regions),
+                        random.randint(100, 1000)
+                    ))
+
+                    print(f"Inserted sale at {now}")
+
+                    # Cleanup once per hour
+                    if now.minute == 0:
+                        cursor.execute("""
+                            DELETE FROM sales 
+                            WHERE sale_date < NOW() - INTERVAL '60 days'
+                        """)
+                        print("Old data cleaned")
+
+        except Exception as e:
+            print("Error:", e)
+
+        # Wait 1 minute
+        time.sleep(60)
+
+# Start background thread
 threading.Thread(target=add_sales_loop, daemon=True).start()
 
 # -------------------------
-# Minimal web server to keep free tier alive
+# Minimal web server
 # -------------------------
 @app.route("/")
 def index():
